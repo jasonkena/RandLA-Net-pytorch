@@ -18,7 +18,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 # my module
-from utils.config import ConfigSemanticKITTI as cfg
+from utils.config import ConfigFreseg
 from utils.metric import compute_acc, IoUCalculator
 from network.RandLANet import Network
 from network.loss_func import compute_loss
@@ -32,12 +32,16 @@ parser.add_argument('--log_dir', default='log', help='Dump dir to save model che
 parser.add_argument('--max_epoch', type=int, default=100, help='Epoch to run [default: 100]')
 parser.add_argument('--batch_size', type=int, default=5, help='Batch Size during training [default: 5]')
 parser.add_argument('--val_batch_size', type=int, default=30, help='Batch Size during training [default: 30]')
-parser.add_argument('--num_workers', type=int, default=5, help='Number of workers [default: 5]')
+parser.add_argument("--npoint", type=int, default=2048, metavar="N")
+parser.add_argument("--path_length", type=int, help="path length")
+parser.add_argument("--fold", type=int, help="fold")
+parser.add_argument(
+    "--frenet", action="store_true", help="whether to use Frenet transformation"
+)
+parser.add_argument("--num_workers", type=int, default=16, metavar="N")
 FLAGS = parser.parse_args()
 
-
-def my_worker_init_fn(worker_id):
-    np.random.seed(np.random.get_state()[1][0] + worker_id)
+cfg = ConfigFreseg(FLAGS.npoint)
 
 
 class Trainer:
@@ -54,29 +58,30 @@ class Trainer:
         # tensorboard writer
         self.tf_writer = SummaryWriter(self.log_dir)
         # get_dataset & dataloader
-        train_dataset = SemanticKITTI('training')
-        val_dataset = SemanticKITTI('validation')
 
-        self.train_loader = DataLoader(
-            train_dataset,
+        self.train_loader, _ = get_dataloader(
+            species="seg_den",
+            path_length=FLAGS.path_length,
+            num_points=FLAGS.npoint,
+            fold=FLAGS.fold,
+            is_train=True,
             batch_size=FLAGS.batch_size,
-            shuffle=True,
             num_workers=FLAGS.num_workers,
-            worker_init_fn=my_worker_init_fn,
-            collate_fn=train_dataset.collate_fn,
-            pin_memory=True
+            frenet=FLAGS.frenet,
         )
-        self.val_loader = DataLoader(
-            val_dataset,
-            batch_size=FLAGS.val_batch_size,
-            shuffle=True,
+        self.val_loader, _ = get_dataloader(
+            species="seg_den",
+            path_length=FLAGS.path_length,
+            num_points=FLAGS.npoint,
+            fold=FLAGS.fold,
+            is_train=False,
+            batch_size=FLAGS.batch_size,
             num_workers=FLAGS.num_workers,
-            worker_init_fn=my_worker_init_fn,
-            collate_fn=val_dataset.collate_fn,
-            pin_memory=True
+            frenet=FLAGS.frenet,
         )
+
         # Network & Optimizer
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = Network(cfg)
         self.net.to(device)
 
@@ -96,8 +101,7 @@ class Trainer:
             self.start_epoch = checkpoint['epoch']
 
         # Loss Function
-        class_weights = torch.from_numpy(train_dataset.get_class_weight()).float().cuda()
-        self.criterion = nn.CrossEntropyLoss(weight=class_weights, reduction='none')
+        self.criterion = nn.CrossEntropyLoss(reduction='none')
 
         # Multiple GPU Training
         if torch.cuda.device_count() > 1:
@@ -110,13 +114,8 @@ class Trainer:
     def train_one_epoch(self):
         self.net.train()  # set model to training mode
         tqdm_loader = tqdm(self.train_loader, total=len(self.train_loader))
-        for batch_idx, batch_data in enumerate(tqdm_loader):
-            for key in batch_data:
-                if type(batch_data[key]) is list:
-                    for i in range(cfg.num_layers):
-                        batch_data[key][i] = batch_data[key][i].cuda(non_blocking=True)
-                else:
-                    batch_data[key] = batch_data[key].cuda(non_blocking=True)
+        for batch_idx, (trunk_id, points, target) in enumerate(tqdm_loader):
+            target = target > 0
 
             self.optimizer.zero_grad()
             # Forward pass
