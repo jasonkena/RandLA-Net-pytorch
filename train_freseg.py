@@ -18,10 +18,22 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 # my module
-from utils.config import ConfigFreseg
-from utils.metric import compute_acc, IoUCalculator
+from util.config import ConfigFreseg
+from util.metric import compute_acc, IoUCalculator
 from network.RandLANet import Network
 from network.loss_func import compute_loss
+from dataset.semkitti_trainset import weird_collate
+
+from functools import partial
+
+def nested_to_device(nested, device):
+    if isinstance(nested, dict):
+        return {k: nested_to_device(v, device) for k, v in nested.items()}
+    elif isinstance(nested, list):
+        return [nested_to_device(v, device) for v in nested]
+    else:
+        assert isinstance(nested, torch.Tensor)
+        return nested.to(device)
 
 torch.backends.cudnn.enabled = False
 
@@ -40,15 +52,20 @@ parser.add_argument(
 )
 parser.add_argument("--num_workers", type=int, default=16, metavar="N")
 FLAGS = parser.parse_args()
+FLAGS.log_dir = os.path.join('log', f'{FLAGS.fold}_{FLAGS.path_length}_{FLAGS.npoint}_{FLAGS.frenet}')
 
 cfg = ConfigFreseg(FLAGS.npoint)
 
+class FakeDataset:
+    def __init__(self, num_classes, ignored_labels):
+        self.num_classes = num_classes
+        self.ignored_labels = ignored_labels
 
 class Trainer:
     def __init__(self):
         # Init Logging
         if not os.path.exists(FLAGS.log_dir):
-            os.mkdir(FLAGS.log_dir)
+            os.makedirs(FLAGS.log_dir)
         self.log_dir = FLAGS.log_dir
         log_fname = os.path.join(FLAGS.log_dir, 'log_train.txt')
         LOGGING_FORMAT = '%(asctime)s %(levelname)s: %(message)s'
@@ -68,6 +85,7 @@ class Trainer:
             batch_size=FLAGS.batch_size,
             num_workers=FLAGS.num_workers,
             frenet=FLAGS.frenet,
+            collate_fn=partial(weird_collate, my_cfg=cfg),
         )
         self.val_loader, _ = get_dataloader(
             species="seg_den",
@@ -78,10 +96,12 @@ class Trainer:
             batch_size=FLAGS.batch_size,
             num_workers=FLAGS.num_workers,
             frenet=FLAGS.frenet,
+            collate_fn=partial(weird_collate, my_cfg=cfg),
         )
 
         # Network & Optimizer
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net = Network(cfg)
         self.net.to(device)
 
@@ -108,15 +128,15 @@ class Trainer:
             self.logger.info("Let's use %d GPUs!" % (torch.cuda.device_count()))
             # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
             self.net = nn.DataParallel(self.net)
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+        self.train_dataset = FakeDataset(cfg.num_classes, [])
+        self.val_dataset = FakeDataset(cfg.num_classes, [])
 
     def train_one_epoch(self):
         self.net.train()  # set model to training mode
         tqdm_loader = tqdm(self.train_loader, total=len(self.train_loader))
-        for batch_idx, (trunk_id, points, target) in enumerate(tqdm_loader):
-            target = target > 0
-
+        for batch_idx, batch_data in enumerate(tqdm_loader):
+            batch_data = nested_to_device(batch_data, torch.device("cuda:0"))
+            # move all batch data to device
             self.optimizer.zero_grad()
             # Forward pass
             torch.cuda.synchronize()
@@ -148,6 +168,7 @@ class Trainer:
         tqdm_loader = tqdm(self.val_loader, total=len(self.val_loader))
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(tqdm_loader):
+                batch_data = nested_to_device(batch_data, torch.device("cuda:0"))
                 for key in batch_data:
                     if type(batch_data[key]) is list:
                         for i in range(cfg.num_layers):

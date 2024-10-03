@@ -4,8 +4,9 @@ import os
 import json
 import pandas as pd
 from tqdm import tqdm
-import utils.cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
-import utils.nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
+import util.cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
+# https://github.com/tsunghan-wu/RandLA-Net-pytorch/issues/19#issuecomment-1352684061
+import nearest_neighbors
 
 
 class DataProcessing:

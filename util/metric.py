@@ -25,7 +25,7 @@ class IoUCalculator:
         val_total_correct += correct
         val_total_seen += len(labels_valid)
 
-        conf_matrix = confusion_matrix(labels_valid, pred_valid, np.arange(0, self.cfg.num_classes, 1))
+        conf_matrix = confusion_matrix(labels_valid, pred_valid, labels=np.arange(0, self.cfg.num_classes, 1))
         self.lock.acquire()
         self.gt_classes += np.sum(conf_matrix, axis=1)
         self.positive_classes += np.sum(conf_matrix, axis=0)

@@ -1,7 +1,7 @@
-cd utils/nearest_neighbors
-python setup.py install # --home="."
+cd util/nearest_neighbors
+python setup.py install --home="."
 cd ../../
 
-cd utils/cpp_wrappers
+cd util/cpp_wrappers
 sh compile_wrappers.sh
 cd ../../../
